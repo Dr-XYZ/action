@@ -1,12 +1,12 @@
 name: Check MDN Translation Sync Lag
 
 on:
-  workflow_dispatch: # 允許手動觸發
+  workflow_dispatch: # 手動觸發
   schedule:
-    - cron: '0 0 * * 0' # 每週日午夜執行一次 (UTC 時間)
+    - cron: '0 0 * * 0' # 每週日午夜 (UTC)
 
 permissions:
-  contents: write # 需要寫入權限來更新 README.md
+  contents: write # 允許寫入 README.md
 
 jobs:
   check_lag:
@@ -16,18 +16,18 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: mdn/content
-          path: content # 將原始碼放在 ./content 目錄
+          path: content
 
       - name: Checkout mdn/translated-content (Translations)
         uses: actions/checkout@v4
         with:
           repository: mdn/translated-content
-          path: translated-content # 將翻譯放在 ./translated-content 目錄
+          path: translated-content
 
       - name: Checkout Current Repo (for README update)
         uses: actions/checkout@v4
         with:
-          path: current-repo # 將觸發此 workflow 的 repo 放在 ./current-repo 目錄
+          path: current-repo
 
       - name: Set up Git user
         run: |
@@ -35,10 +35,9 @@ jobs:
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
         working-directory: ./current-repo
 
-      - name: Check Translation Lag
-        id: check
+      - name: Check Translation Lag and Update README.md
         run: |
-          set -e # 如果任何命令失敗則停止
+          set -e
 
           CONTENT_DIR="content"
           TRANSLATED_DIR="translated-content"
@@ -53,123 +52,109 @@ jobs:
           find "$ZH_TW_PATH" -type f -name '*.md' | while read -r zh_file; do
             echo "Processing $zh_file ..."
 
-            # --- MODIFIED SECTION START ---
-            # 使用 awk 提取 YAML Front Matter 中 l10n.sourceCommit 的值
             source_commit=$(awk '
               BEGIN { in_l10n = 0; front_matter_ended = 0 }
-              /^---$/ { # 偵測 Front Matter 的分隔符
-                if (NR > 1) { front_matter_ended = 1 } # 如果不是第一行，表示 Front Matter 結束
-                next # 跳過分隔符行
+              /^---$/ {
+                if (NR > 1) { front_matter_ended = 1 }
+                next
               }
-              front_matter_ended { exit } # 如果 Front Matter 已經結束，停止處理此檔案
-              /^\s*l10n:\s*$/ { # 找到 l10n: 行 (允許空白)
-                in_l10n = 1
-                next # 繼續處理下一行
-              }
-              # 如果在 l10n 區塊內，且找到 sourceCommit
+              front_matter_ended { exit }
+              /^\s*l10n:\s*$/ { in_l10n = 1; next }
               in_l10n && /^\s+sourceCommit:/ {
-                val = $0; # 取得整行
-                sub(/^\s+sourceCommit:\s*/, "", val); # 移除 key 和前面的空白
-                sub(/\s*#.*/, "", val);       # 移除可能的行尾註解
-                gsub(/^["'\'']|["'\'']$/, "", val); # 移除前後可能存在的引號
-                sub(/\s*$/, "", val);         # 移除結尾空白
-                print val; # 輸出 commit SHA
-                exit # 找到即停止處理此檔案
+                val = $0;
+                sub(/^\s+sourceCommit:\s*/, "", val);
+                sub(/\s*#.*/, "", val);
+                gsub(/^["'\'']|["'\'']$/, "", val);
+                sub(/\s*$/, "", val);
+                print val;
+                exit
               }
-              # 如果遇到非空白開頭的行，表示 l10n 區塊結束 (處理非預期縮排)
-              in_l10n && !/^\s+/ {
-                 in_l10n = 0
-              }
+              in_l10n && !/^\s+/ { in_l10n = 0 }
             ' "$zh_file")
-            # --- MODIFIED SECTION END ---
-
 
             if [[ -z "$source_commit" ]]; then
-              echo "  -> 'l10n.sourceCommit' key not found or invalid format in front matter. Skipping."
-              continue # 如果 awk 沒有輸出 (沒找到)，則跳過
+              echo "  -> 'l10n.sourceCommit' key not found or invalid. Skipping."
+              continue
             fi
 
-            # 基本檢查 SHA 格式 (至少 7 位)
             if [[ ${#source_commit} -lt 7 ]]; then
-              echo "  -> Invalid sourceCommit format extracted: [$source_commit]. Skipping."
+              echo "  -> Invalid sourceCommit format: [$source_commit]. Skipping."
               continue
             fi
             echo "  -> Found sourceCommit: $source_commit"
 
-            # --- 以下部分與原腳本相同 ---
-
-            # 構建對應的 en-us 檔案路徑
             relative_path_zh=${zh_file#"$ZH_TW_PATH/"}
-            en_us_file="$EN_US_PATH/$relative_path_zh"
+            relative_path_en="files/en-us/$relative_path_zh"
 
-            # 檢查對應的 en-us 檔案是否存在於 content repo
+            en_us_file="$EN_US_PATH/$relative_path_zh"
             if [[ ! -f "$en_us_file" ]]; then
-              echo "  -> Corresponding en-us file not found: $en_us_file. Skipping."
+              echo "  -> Corresponding en-us file not found. Skipping."
               continue
             fi
 
-            # 取得 en-us 檔案在 content repo 中的最新 commit SHA
             pushd "$CONTENT_DIR" > /dev/null
-            latest_en_commit=$(git log -1 --pretty=format:%H -- "$en_us_file" || echo "") # 如果git log失敗返回空字串
+            if ! git ls-files --error-unmatch "$relative_path_en" > /dev/null 2>&1; then
+              echo "  -> File not tracked by git. Skipping."
+              popd > /dev/null
+              continue
+            fi
+
+            latest_en_commit=$(git log -1 --pretty=format:%H -- "$relative_path_en" || echo "")
             popd > /dev/null
 
             if [[ -z "$latest_en_commit" ]]; then
-               echo "  -> Could not get latest commit for $en_us_file (maybe file history issue?). Skipping."
-               continue
+              echo "  -> Could not get latest commit. Skipping."
+              continue
             fi
-            echo "  -> Latest commit for $en_us_file: $latest_en_commit"
+            echo "  -> Latest commit: $latest_en_commit"
 
-            # 計算 commit 差距
             pushd "$CONTENT_DIR" > /dev/null
             commit_diff_count=0
             if [[ "$source_commit" != "$latest_en_commit" ]]; then
               is_ancestor=$(git merge-base --is-ancestor "$source_commit" "$latest_en_commit")
-              ancestor_exit_code=$? # 儲存 exit code
+              ancestor_exit_code=$?
 
-              # 檢查 source_commit 是否存在於 repo 中 (針對該檔案)
-              # git cat-file -e "$source_commit"^{commit} 會在 commit 無效時返回非 0
-              # 但我們更關心它是否在 *這個檔案* 的歷史中
-              # 嘗試直接計算，如果 rev-list 出錯表示 SHA 有問題或不在歷史中
-              set +e # 暫時關閉 exit on error
-              commit_diff_count=$(git rev-list --count "${source_commit}..${latest_en_commit}" -- "$en_us_file" 2>/dev/null)
+              set +e
+              commit_diff_count=$(git rev-list --count "${source_commit}..${latest_en_commit}" -- "$relative_path_en" 2>/dev/null)
               rev_list_exit_code=$?
-              set -e # 重新開啟 exit on error
+              set -e
 
               if [[ $rev_list_exit_code -ne 0 || $ancestor_exit_code -ne 0 ]]; then
-                  # 計算失敗或非祖先，標記為特殊狀態
-                  commit_diff_count=-1
-                  echo "  -> Warning: Cannot calculate diff count. sourceCommit ($source_commit) might be invalid, rewritten, or not an ancestor of $latest_en_commit for $en_us_file."
-              # else: commit_diff_count 算出來了，可能是 0 或正數
+                commit_diff_count=-1
+                echo "  -> Warning: Cannot calculate diff count."
               elif [[ $commit_diff_count -eq 0 && "$source_commit" != "$latest_en_commit" ]]; then
-                 # 如果 rev-list count 是 0 但 SHA 不同，可能是合併 commit 或其他複雜情況
-                 # 仍視為落後，但標記為特殊？ 或許直接用-1更一致
-                 commit_diff_count=-1
-                 echo "  -> Warning: Diff count is 0 but SHAs differ. Marking as non-sync."
+                commit_diff_count=-1
+                echo "  -> Warning: Diff count is 0 but SHAs differ."
               fi
             fi
             popd > /dev/null
 
             echo "  -> Commit difference count: $commit_diff_count"
 
-            # 如果差距不為 0，則記錄
             if [[ "$commit_diff_count" -ne 0 ]]; then
-               lag_status="落後 $commit_diff_count commits"
-               if [[ "$commit_diff_count" -eq -1 ]]; then
-                   lag_status="不同步 (SHA 無效、歷史變更或非祖先關係)"
-               fi
-               relative_path_log=$(echo "$relative_path_zh" | sed 's/`/\\`/g') # Escape backticks for markdown code block
-               echo "* \`$relative_path_log\`: $lag_status (翻譯基於: \`$source_commit\`, 英文最新: \`$latest_en_commit\`)" >> $LAG_LOG
+              lag_status="落後 $commit_diff_count commits"
+              if [[ "$commit_diff_count" -eq -1 ]]; then
+                lag_status="不同步 (SHA 無效、歷史變更或非祖先關係)"
+              fi
+              relative_path_log=$(echo "$relative_path_zh" | sed 's/`/\\`/g')
+              echo "* \`$relative_path_log\`: $lag_status (翻譯基於: \`$source_commit\`, 英文最新: \`$latest_en_commit\`)" >> $LAG_LOG
             fi
           done
 
-          # 檢查是否有記錄到落後的檔案
           if [[ -s "$LAG_LOG" ]]; then
             echo "::set-output name=has_lag::true"
-            echo "Found translation lag. Log content:"
-            cat $LAG_LOG
+            echo "Found translation lag. Updating README..."
+
+            echo -e "# 翻譯同步狀態報告\n\n以下是目前 zh-tw 翻譯落後的文件列表（每週自動更新）：" > "$README_FILE"
+            echo "" >> "$README_FILE"
+            cat "$LAG_LOG" >> "$README_FILE"
+
+            pushd current-repo > /dev/null
+            git add README.md
+            git commit -m "docs: 每週自動更新翻譯同步狀態"
+            git push
+            popd > /dev/null
           else
             echo "::set-output name=has_lag::false"
             echo "No translation lag found."
           fi
-        working-directory: ./ # 確保工作目錄正確
-
