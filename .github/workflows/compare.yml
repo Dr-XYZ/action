@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout repo
+    - name: Checkout code
       uses: actions/checkout@v3
 
     - name: Setup Node.js
@@ -19,7 +19,12 @@ jobs:
         node-version: '18'
 
     - name: Run HTML generator
-      run: node generate-html.js
+      run: |
+        echo "Generating index.html from README.md"
+        node generate-html.js
+        echo "=== Output files ==="
+        ls -alh
+        cat index.html
 
     - name: Deploy index.html manually to gh-pages
       run: |
