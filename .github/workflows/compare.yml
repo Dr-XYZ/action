@@ -1,4 +1,4 @@
-name: Generate index.html
+name: Generate and Deploy index.html
 
 on:
   push:
@@ -19,13 +19,17 @@ jobs:
         node-version: '18'
 
     - name: Run HTML generator
-      run: |
-        node generate-html.js
+      run: node generate-html.js
 
-    - name: Deploy to GitHub Pages
-      uses: peaceiris/actions-gh-pages@v3
-      with:
-        github_token: ${{ secrets.GITHUB_TOKEN }}
-        publish_dir: ./
-        publish_branch: gh-pages
-        force_orphan: true
+    - name: Deploy index.html manually to gh-pages
+      run: |
+        mkdir gh-pages
+        cp index.html gh-pages/
+        cd gh-pages
+        git init
+        git config user.name "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        git add .
+        git commit -m "Deploy index.html"
+        git branch -M gh-pages
+        git push --force https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }} gh-pages
